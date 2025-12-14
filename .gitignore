@@ -1,0 +1,9 @@
+*.sh
+*.so
+*.out
+*.bat
+*.dll
+*.exe
+
+*.swp
+*.c

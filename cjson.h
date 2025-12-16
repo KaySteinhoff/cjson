@@ -127,29 +127,21 @@ static char* cjsonProcessToken(char *data, cJsonToken **list, int *count, int *c
 	switch(*data)
 	{
 		case CJ_QUOTE:
-			data = cjsonAppendToken(list, count, capacity, CJ_QUOTE, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_QUOTE, data, 1);
 		case CJ_COMMA:
-			data = cjsonAppendToken(list, count, capacity, CJ_COMMA, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_COMMA, data, 1);
 		case CJ_DOT:
-			data = cjsonAppendToken(list, count, capacity, CJ_DOT, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_DOT, data, 1);
 		case CJ_DDOT:
-			data = cjsonAppendToken(list, count, capacity, CJ_DDOT, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_DDOT, data, 1);
 		case CJ_SQB_OPEN:
-			data = cjsonAppendToken(list, count, capacity, CJ_SQB_OPEN, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_SQB_OPEN, data, 1);
 		case CJ_SQB_CLOSED:
-			data = cjsonAppendToken(list, count, capacity, CJ_SQB_CLOSED, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_SQB_CLOSED, data, 1);
 		case CJ_CUB_OPEN:
-			data = cjsonAppendToken(list, count, capacity, CJ_CUB_OPEN, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_CUB_OPEN, data, 1);
 		case CJ_CUB_CLOSED:
-			data = cjsonAppendToken(list, count, capacity, CJ_CUB_CLOSED, data, 1);
-			return data;
+			return cjsonAppendToken(list, count, capacity, CJ_CUB_CLOSED, data, 1);
 	}
 
 	char *endp = NULL;
@@ -157,8 +149,7 @@ static char* cjsonProcessToken(char *data, cJsonToken **list, int *count, int *c
 	{
 		long dummy = 0;
 		dummy = cjson_strtod(data, &endp);
-		data = cjsonAppendToken(list, count, capacity, CJ_NUMBER, data, endp - data);
-		return data;
+		return cjsonAppendToken(list, count, capacity, CJ_NUMBER, data, endp - data);
 	}
 
 	for(endp = data;
@@ -171,8 +162,7 @@ static char* cjsonProcessToken(char *data, cJsonToken **list, int *count, int *c
 		*endp != CJ_CUB_OPEN &&
 		*endp != CJ_CUB_CLOSED; endp++)
 	{ }
-	data = cjsonAppendToken(list, count, capacity, CJ_LABEL, data, endp - data);
-	return data;
+	return cjsonAppendToken(list, count, capacity, CJ_LABEL, data, endp - data);
 }
 
 static cJsonToken* cjsonLex(char *data, int *count)
@@ -194,6 +184,10 @@ static cJsonToken* cjsonLex(char *data, int *count)
 	for(; data != NULL && *data != 0;)
 	{
 		data = cjsonProcessToken(data, &tokens, &tokCount, &tokCapacity);
+
+		if(!data)
+			break;
+
 		while(cjsonIsWhitespace(*data))
 			data++;
 	}
@@ -222,7 +216,7 @@ static unsigned int cjsonIsWhitespace(char c)
 // '*' : One or more elements at this position (Element exclusive)
 // '+' : Zero or more elements at this position (Element exclusive)
 // '"?"' : Following must exist if previous is true
-// '$' : Standing in for the starting of the list
+// '$' : Standing in for the start token of the current list
 // '!' : Allows zero or max elements of a set (Set exclusive)
 //
 // <list> -> (CJ_CUB_OPEN|CJ_SQB_OPEN) <field>* ("$ == CJ_CUB_OPEN ? CJ_CUB_CLOSED" | "$ == CJ_SQB_OPEN ? CJ_SQB_CLOSED")
@@ -265,8 +259,9 @@ static int cjsonReadString(cJsonToken *tokens, int count, char **ptr)
 		errno = EUCLEAN;
 		return -1;
 	}
+
 	if(*ptr)
-		cjson_free(*ptr);
+		cjson_free(ptr);
 
 	*ptr = NULL;
 	int strLength = 1, idx = 1;
@@ -314,26 +309,26 @@ static int cjsonReadField(cJsonToken *tokens, cJsonEnum listStart, int count, cJ
 	}
 
 	/* Parse list, string or number */
-	if(	tokens[idx].type == CJ_SQB_OPEN ||
-		tokens[idx].type == CJ_CUB_OPEN)
-		idx = cjsonReadList(tokens + idx, count - idx, field);
-	else if(tokens[idx].type == CJ_NUMBER ||
-		tokens[idx].type == CJ_DOT)
-		idx = cjsonReadNumber(tokens + idx, count - idx, field);
-	else if(tokens[idx].type == CJ_QUOTE)
+	switch(tokens[idx].type)
 	{
-		idx = cjsonReadString(tokens + idx, count - idx, &field->data.string);
-		if(idx >= 0)
+		case CJ_SQB_OPEN:
+		case CJ_CUB_OPEN:
+			idx = cjsonReadList(tokens + idx, count - idx, field);
+			break;
+		case CJ_NUMBER:
+		case CJ_DOT:
+			idx = cjsonReadNumber(tokens + idx, count - idx, field);
+			break;
+		case CJ_QUOTE:
+			idx = cjsonReadString(tokens + idx, count - idx, &field->data.string);
+			if(idx < 0)
+				return -1;
 			field->type = CJ_STRING;
+			break;
+		default:
+			errno = EUCLEAN;
+			return -1;
 	}
-	else
-	{
-		errno = EUCLEAN;
-		return -1;
-	}
-
-	if(idx < 0)
-		return -1;
 
 	idx = count - idx;
 	if(tokens[idx].type == CJ_COMMA)
@@ -392,13 +387,12 @@ static int cjsonReadList(cJsonToken *tokens, int count, cJsonElement *list)
 			break;
 		}
 
+		memset(fields[fieldsCount], 0, sizeof(cJsonElement));
 		idx = cjsonReadField(tokens + idx, listStart, count - idx, fields[fieldsCount++]);
 		if(idx < 0)
 			break;
 
 		idx = count - idx;
-		if(tokens[idx].type == CJ_COMMA)
-			idx++;
 	}
 
 	if(error || idx < 0)
@@ -453,13 +447,13 @@ cJsonElement* cjsonParse(char *data)
 
 	memset(root, 0, sizeof(cJsonElement));
 	tokCount = cjsonReadList(list, tokCount, root);
-
 	cjson_free(list);
+
 	if(tokCount == 0)
 		return root;
 
 	// data may a be malformed json but failure to read a string/number or allocation
-	// of heap memory also cause NULL to be returned so we must not modify errno here
+	// of heap memory may also cause NULL to be returned so we must not modify errno here
 	cjsonFreeMapping(root);
 	return NULL;
 }

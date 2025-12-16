@@ -222,13 +222,13 @@ static unsigned int cjsonIsWhitespace(char c)
 // '*' : One or more elements at this position (Element exclusive)
 // '+' : Zero or more elements at this position (Element exclusive)
 // '"?"' : Following must exist if previous is true
-// '$' : Standing int for the starting of the list
+// '$' : Standing in for the starting of the list
 // '!' : Allows zero or max elements of a set (Set exclusive)
 //
 // <list> -> (CJ_CUB_OPEN|CJ_SQB_OPEN) <field>* ("$ == CJ_CUB_OPEN ? CJ_CUB_CLOSED" | "$ == CJ_SQB_OPEN ? CJ_SQB_CLOSED")
 // <field> -> "$ == CJ_CUB_OPEN ? <string> CJ_DDOT" (<list>|<string>|<number>) CJ_COMMA
 // <string> -> CJ_QUOTE [CJ_LABEL+|CJ_DDOT+|CJ_DOT+|CJ_COMMA+]! CJ_QUOTE
-// <number> -> (CJ_NUMBER)! [(CJ_DOT)! | (CJ_NUMBER)!]
+// <number> -> (CJ_NUMBER)! [CJ_DOT|CJ_NUMBER]
 
 static int cjsonReadNumber(cJsonToken *tokens, int count, cJsonElement *number)
 {

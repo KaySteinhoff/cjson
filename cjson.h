@@ -6,6 +6,17 @@ typedef enum {
 	CJ_ARRAY,
 	CJ_STRING,
 	CJ_NUMBER,
+#ifdef CJSON_IMPLEMENTATION
+	CJ_QUOTE = '"',
+	CJ_LABEL,
+	CJ_COMMA = ',',
+	CJ_DOT = '.',
+	CJ_DDOT = ':',
+	CJ_SQB_OPEN = '[',
+	CJ_SQB_CLOSED = ']',
+	CJ_CUB_OPEN = '{',
+	CJ_CUB_CLOSED = '}',
+#endif
 } cJsonEnum;
 
 typedef struct cjson_element {
@@ -22,24 +33,24 @@ typedef struct cjson_element {
 } cJsonElement;
 
 // @summary
-// Parses the given json data and returns a filled cJsonElement structure mapping the given data.
+// Parses the given json data and returns a filled cJsonElement struct.
 //
 // @args
-// data: the json data that is to be parsed
+// data: the json string to parse
 //
 // @return
-// Returns a pointer to a filled cJsonElement struct upon success.
+// Returns a filled cJsonElement struct upon success.
 // Returns NULL on failure and sets errno to it's appropriate value listed below:
-// ENOMEM: Memory allocation failed
-// EUCLEAN: Malformed json data
+// ENOMEM: Failure to allocate memory
+// EUCLEAN: Malformed json string
 //
-cJsonElement* cjsonParseData(char *data);
+cJsonElement* cjsonParse(char *data);
 
 // @summary
-// Frees a filled cJsonElement struct mapping some arbirary json data.
+// Free a filles cJsonElement struct.
 //
 // @args
-// mapping: the filled cJsonElement struct that is to be freed
+// mapping: the filles cJsonElement struct that is to be freed
 //
 // @return
 // ---
@@ -54,6 +65,12 @@ void cjsonFreeMapping(cJsonElement *mapping);
 
 #endif
 
+#ifndef CJSON_NO_DEFAULT_STRTOD
+
+#define cjson_strtod(START, ENDP) strtod(START, ENDP)
+
+#endif // CJSON_NO_DEFAULT_STRTOD
+
 #ifndef CJSON_NO_DEFAULT_ALLOC
 
 #define cjson_malloc(NSIZE) malloc(NSIZE)
@@ -65,267 +82,355 @@ void cjsonFreeMapping(cJsonElement *mapping);
 #include <errno.h>
 #include <string.h>
 
+typedef struct {
+	cJsonEnum type;
+	int length;
+	char *value;
+} cJsonToken;
+
 static unsigned int cjsonIsWhitespace(char c);
-static char* cjsonMoveToNextChar(char *ptr, char haltSymbol);
-static char* cjsonReadString(char *strStart, cJsonElement *string);
-static char* cjsonReadNumber(char *numStart, cJsonElement *number);
-static char* cjsonReadObject(char *data, cJsonElement *object);
-static char* cjsonReadArray(char *data, cJsonElement *array);
+static int cjsonReadNumber(cJsonToken *tokens, int count, cJsonElement *number);
+static int cjsonReadString(cJsonToken *tokens, int count, char **ptr);
+static int cjsonReadField(cJsonToken *tokens, cJsonEnum listStart, int count, cJsonElement *field);
+static int cjsonReadList(cJsonToken *tokens, int count, cJsonElement *list);
+
+static char* cjsonAppendToken(cJsonToken **list, int *count, int *capacity, cJsonEnum type, char *value, int length)
+{
+	if(*count >= *capacity)
+	{
+		cJsonToken *tmp = cjson_realloc(list[0], sizeof(cJsonToken) * (*capacity << 1));
+		if(!tmp)
+		{
+			errno = ENOMEM;
+			return NULL;
+		}
+		list[0] = tmp;
+		*capacity = *capacity << 1;
+	}
+
+	list[0][*count].type = type;
+	list[0][*count].value = value;
+	list[0][*count].length = length;
+	*count = *count + 1;
+
+	return value + length;
+}
+
+static char* cjsonProcessToken(char *data, cJsonToken **list, int *count, int *capacity)
+{
+	if(!data || *data == 0)
+	{
+		errno = EUCLEAN;
+		return NULL;
+	}
+
+	switch(*data)
+	{
+		case CJ_QUOTE:
+			data = cjsonAppendToken(list, count, capacity, CJ_QUOTE, data, 1);
+			return data;
+		case CJ_COMMA:
+			data = cjsonAppendToken(list, count, capacity, CJ_COMMA, data, 1);
+			return data;
+		case CJ_DOT:
+			data = cjsonAppendToken(list, count, capacity, CJ_DOT, data, 1);
+			return data;
+		case CJ_DDOT:
+			data = cjsonAppendToken(list, count, capacity, CJ_DDOT, data, 1);
+			return data;
+		case CJ_SQB_OPEN:
+			data = cjsonAppendToken(list, count, capacity, CJ_SQB_OPEN, data, 1);
+			return data;
+		case CJ_SQB_CLOSED:
+			data = cjsonAppendToken(list, count, capacity, CJ_SQB_CLOSED, data, 1);
+			return data;
+		case CJ_CUB_OPEN:
+			data = cjsonAppendToken(list, count, capacity, CJ_CUB_OPEN, data, 1);
+			return data;
+		case CJ_CUB_CLOSED:
+			data = cjsonAppendToken(list, count, capacity, CJ_CUB_CLOSED, data, 1);
+			return data;
+	}
+
+	char *endp = NULL;
+	if(*data >= '0' && *data <= '9')
+	{
+		long dummy = 0;
+		dummy = cjson_strtod(data, &endp);
+		data = cjsonAppendToken(list, count, capacity, CJ_NUMBER, data, endp - data);
+		return data;
+	}
+
+	for(endp = data;
+		*endp != CJ_QUOTE &&
+		*endp != CJ_COMMA &&
+		*endp != CJ_DOT &&
+		*endp != CJ_DDOT &&
+		*endp != CJ_SQB_OPEN &&
+		*endp != CJ_SQB_CLOSED &&
+		*endp != CJ_CUB_OPEN &&
+		*endp != CJ_CUB_CLOSED; endp++)
+	{ }
+	data = cjsonAppendToken(list, count, capacity, CJ_LABEL, data, endp - data);
+	return data;
+}
+
+static cJsonToken* cjsonLex(char *data, int *count)
+{
+	if(!data || (*data != '{' && *data != '['))
+	{
+		errno = EUCLEAN;
+		return NULL;
+	}
+
+	int tokCount = 0, tokCapacity = 2;
+	cJsonToken *tokens = cjson_malloc(sizeof(cJsonToken) * tokCapacity);
+	if(!tokens)
+	{
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	for(; data != NULL && *data != 0;)
+	{
+		data = cjsonProcessToken(data, &tokens, &tokCount, &tokCapacity);
+		while(cjsonIsWhitespace(*data))
+			data++;
+	}
+
+	if(!data)
+	{
+		cjson_free(tokens);
+		return NULL;
+	}
+
+	*count = tokCount;
+	return tokens;
+}
 
 static unsigned int cjsonIsWhitespace(char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
 }
 
-static char* cjsonMoveToNextChar(char *ptr, char haltSymbol)
-{
-	while(*ptr != 0 && *ptr != haltSymbol)
-		ptr++;
-	if(*ptr == 0)
-		return NULL;
-	return ptr;
-}
+// cJson factories
+// Legend:
+// '<>' : factory
+// '()' : Set where only one element can and any one must exist
+// '[]' : Set where one or more elements can and any one must exist
+// '|' : Seperator of elements in a set
+// '*' : One or more elements at this position (Element exclusive)
+// '+' : Zero or more elements at this position (Element exclusive)
+// '"?"' : Following must exist if previous is true
+// '$' : Standing int for the starting of the list
+// '!' : Allows zero or max elements of a set (Set exclusive)
+//
+// <list> -> (CJ_CUB_OPEN|CJ_SQB_OPEN) <field>* ("$ == CJ_CUB_OPEN ? CJ_CUB_CLOSED" | "$ == CJ_SQB_OPEN ? CJ_SQB_CLOSED")
+// <field> -> "$ == CJ_CUB_OPEN ? <string> CJ_DDOT" (<list>|<string>|<number>) CJ_COMMA
+// <string> -> CJ_QUOTE [CJ_LABEL+|CJ_DDOT+|CJ_DOT+|CJ_COMMA+]! CJ_QUOTE
+// <number> -> (CJ_NUMBER)! [(CJ_DOT)! | (CJ_NUMBER)!]
 
-static char* cjsonReadString(char *strStart, cJsonElement *string)
+static int cjsonReadNumber(cJsonToken *tokens, int count, cJsonElement *number)
 {
-	char *endp = cjsonMoveToNextChar(strStart + 1, '"');
-	if(!endp) // malformed json
+	if(count < 1 || (tokens[0].type != CJ_DOT && tokens[0].type != CJ_NUMBER))
 	{
 		errno = EUCLEAN;
-		return NULL;
+		return -1;
 	}
 
-	char *fieldTerm = endp + 1;
-	while(cjsonIsWhitespace(*fieldTerm))
-		fieldTerm++;
-
-	if(*fieldTerm != ',' && *fieldTerm != '}' && *fieldTerm != ']') // malformed json
-	{
-		errno = EUCLEAN;
-		return NULL;
-	}
-
-	string->type = CJ_STRING;
-	string->data.string = cjson_malloc(endp - strStart);
-	if(!string->data.string)
-	{
-		errno = ENOMEM;
-		return NULL;
-	}
-	memset(string->data.string, 0, endp - strStart);
-	memcpy(string->data.string, strStart + 1, endp - strStart - 1);
-
-	return fieldTerm;
-}
-
-static char* cjsonReadNumber(char *numStart, cJsonElement *number)
-{
 	char *endp = NULL;
-	double n = strtod(numStart, &endp);
-	if(endp == numStart) // invalid number
+	number->data.number = cjson_strtod(tokens[0].value, &endp);
+	// sanity check
+	if(endp == tokens[0].value && tokens[0].type != CJ_DOT)
 	{
 		errno = EUCLEAN;
-		return NULL;
-	}
-
-	while(cjsonIsWhitespace(*endp))
-		endp++;
-
-	if(*endp != ',' && *endp != '}' && *endp != ']') // malformed json
-	{
-		errno = EUCLEAN;
-		return NULL;
+		return -1;
 	}
 
 	number->type = CJ_NUMBER;
-	number->data.number = n;
-	return endp;
+	int length = endp - tokens[0].value, idx = 0;
+	if(length == 0) // must be a single '.'
+		return count - 1;
+
+	while(length >= tokens[idx].length)
+		length -= tokens[idx++].length;
+
+	return count - idx;
 }
 
-// @summary
-// An abstrcted fuction to read json fields.
-//
-// @args
-// startp: the start of the field to read.
-// endp: an optional parameter. When set the field is treated as an object member; if not it is treated as an array value
-// values: a pointer to a pointer of cJsonElement pointers. I know it's cursed but it works and is syntactically valid
-// count: a pointer to an integer holding the current number of elements in 'values'
-// capacity: a pointer to an integer holding the current capacity of 'values'
-//
-// @return
-// Returns the endpoint of the read field upon successfully reading it.
-// Returns NULL upon failing to read the field and sets errno to it's appropriate value, if possible.
-//
-static char* cjsonReadField(char *startp, char *endp, cJsonElement ***values, int *count, int *capacity)
+static int cjsonReadString(cJsonToken *tokens, int count, char **ptr)
 {
-	if(*count >= *capacity)
+	if(count < 2 || tokens[0].type != CJ_QUOTE)
 	{
-		cJsonElement **tmp = cjson_realloc(*values, sizeof(cJsonElement*) * (*capacity << 1));
-		if(!tmp)
-		{
-			errno = ENOMEM;
-			return NULL;
-		}
-		*values = tmp;
-		*capacity = *capacity << 1;
+		errno = EUCLEAN;
+		return -1;
 	}
+	if(*ptr)
+		cjson_free(*ptr);
 
-	values[0][*count] = cjson_malloc(sizeof(cJsonElement));
-	if(!values[0][*count])
+	*ptr = NULL;
+	int strLength = 1, idx = 1;
+	while(	idx < count && tokens[idx].type != CJ_QUOTE)
+		strLength += tokens[idx++].length;
+
+	if(idx == count || tokens[idx].type != CJ_QUOTE)
+		return -1;
+
+	*ptr = cjson_malloc(strLength);
+	if(!*ptr)
 	{
 		errno = ENOMEM;
-		return NULL;
+		return -1;
 	}
 
-	*count = *count + 1;
-	memset(values[0][*count - 1], 0, sizeof(cJsonElement));
-	if(endp)
-	{
-		values[0][*count - 1]->name = cjson_malloc(endp - startp);
-		if(!values[0][*count - 1]->name)
-		{
-			errno = ENOMEM;
-			return NULL;
-		}
+	memset(*ptr, 0, strLength);
+	if(idx > 1)
+		memcpy(*ptr, tokens[1].value, strLength - 1); // we can copy all values starting from the first token since they are still the original json data and thus continous until the token we last read
 
-		memset(values[0][*count - 1]->name, 0, endp - startp);
-		memcpy(values[0][*count - 1]->name, startp + 1, endp - startp - 1);
-
-		startp = cjsonMoveToNextChar(endp, ':') + 1; // + 1 as we want to skip the ':'
-	}
-
-	// Read field
-	while(cjsonIsWhitespace(*startp))
-		startp++;
-
-	if(*startp == '{')
-		endp = cjsonReadObject(startp, values[0][*count - 1]);
-	else if(*startp == '[')
-		endp = cjsonReadArray(startp, values[0][*count - 1]);
-	else if(*startp == '"')
-		endp = cjsonReadString(startp, values[0][*count - 1]);
-	else if((*startp >= '0' && *startp <= '9') || *startp == '.')
-		endp = cjsonReadNumber(startp, values[0][*count - 1]);
-	else // malformed json
-	{
-//		*count = *count + 1; // we need to increase count by one to properly error handle the allocated children
-		errno = EUCLEAN;
-		return NULL;
-	}
-
-	return endp;
+	return count - idx - 1; // - 1 as we want to skip the closing '"'
 }
 
-static char* cjsonReadObject(char *data, cJsonElement *object)
+static int cjsonReadField(cJsonToken *tokens, cJsonEnum listStart, int count, cJsonElement *field)
 {
-	object->type = CJ_OBJECT;
+	if(count < 2)
+	{
+		errno = EUCLEAN;
+		return -1;
+	}
 
-	// We'll have to recalculate 'nextClosing' repeatedly since we may not fetch
-	// the closing bracket of the current element but one of it's children
-	char *startp = cjsonMoveToNextChar(data, '"'), *nextClosing = cjsonMoveToNextChar(data, '}'), *endp = NULL;
-	if(nextClosing < startp)
-		return nextClosing; // no more fields to read (e.g. the object is empty)
+	int idx = 0;
+	if(listStart == CJ_CUB_OPEN)
+	{
+		idx = cjsonReadString(tokens, count, &field->name);
+		if(idx < 0)
+			return -1;
+		else if(tokens[count - idx].type != CJ_DDOT)
+		{
+			errno = EUCLEAN;
+			cjson_free(field->name);
+			return -1;
+		}
+		idx = count - idx + 1;
+	}
 
-	int count = 0, capacity = 2;
+	/* Parse list, string or number */
+	if(	tokens[idx].type == CJ_SQB_OPEN ||
+		tokens[idx].type == CJ_CUB_OPEN)
+		idx = cjsonReadList(tokens + idx, count - idx, field);
+	else if(tokens[idx].type == CJ_NUMBER ||
+		tokens[idx].type == CJ_DOT)
+		idx = cjsonReadNumber(tokens + idx, count - idx, field);
+	else if(tokens[idx].type == CJ_QUOTE)
+	{
+		idx = cjsonReadString(tokens + idx, count - idx, &field->data.string);
+		if(idx >= 0)
+			field->type = CJ_STRING;
+	}
+	else
+	{
+		errno = EUCLEAN;
+		return -1;
+	}
+
+	if(idx < 0)
+		return -1;
+
+	idx = count - idx;
+	if(tokens[idx].type == CJ_COMMA)
+		return count - idx - 1; // - 1 as we want to skip ','
+	else if((listStart == CJ_CUB_OPEN && tokens[idx].type != CJ_CUB_CLOSED) ||
+		(listStart == CJ_SQB_OPEN && tokens[idx].type != CJ_SQB_CLOSED))
+	{
+		errno = EUCLEAN;
+		cjsonFreeMapping(field);
+		return -1;
+	}
+
+	return count - idx;
+}
+
+static int cjsonReadList(cJsonToken *tokens, int count, cJsonElement *list)
+{
+	if(count < 1 || (tokens[0].type != CJ_CUB_OPEN && tokens[0].type != CJ_SQB_OPEN))
+	{
+		errno = EUCLEAN;
+		return -1;
+	}
+
+	int fieldsCount = 0, capacity = 2;
 	cJsonElement **fields = cjson_malloc(sizeof(cJsonElement*) * capacity);
 	if(!fields)
 	{
 		errno = ENOMEM;
-		return NULL;
+		return -1;
 	}
 
-	int error = 0;
-	while(!error && startp && nextClosing && nextClosing > startp)
+	list->type = tokens[0].type == CJ_CUB_OPEN ? CJ_OBJECT : CJ_ARRAY;
+	cJsonEnum listStart = tokens[0].type, listEnd = listStart == CJ_CUB_OPEN ? CJ_CUB_CLOSED : CJ_SQB_CLOSED;
+	int idx = 1, error = 0;
+	/* Parse fields */
+	while(idx < count && tokens[idx].type != listEnd)
 	{
-		// Read field name
-		endp = cjsonMoveToNextChar(startp + 1, '"');
-		if(!endp) // malformed json
+		if(fieldsCount >= capacity)
 		{
-			errno = EUCLEAN;
+			cJsonElement **tmp = cjson_realloc(fields, sizeof(cJsonElement*) * (capacity << 1));
+			if(!tmp)
+			{
+				errno = ENOMEM;
+				error = 1;
+				break;
+			}
+			fields = tmp;
+			capacity <<= 1;
+		}
+
+		fields[fieldsCount] = cjson_malloc(sizeof(cJsonElement));
+		if(!fields[fieldsCount])
+		{
+			errno = ENOMEM;
 			error = 1;
 			break;
 		}
 
-		endp = cjsonReadField(startp, endp, &fields, &count, &capacity);
-		if(!endp) // errno may be some unspecified value meaning we must not change it
-		{
-			error = 1;
+		idx = cjsonReadField(tokens + idx, listStart, count - idx, fields[fieldsCount++]);
+		if(idx < 0)
 			break;
-		}
 
-		startp = cjsonMoveToNextChar(endp, '"');
-		nextClosing = cjsonMoveToNextChar(endp, '}');
+		idx = count - idx;
+		if(tokens[idx].type == CJ_COMMA)
+			idx++;
 	}
 
-	if(error) // failure
+	if(error || idx < 0)
 	{
-		for(int i = 0; i < count - 1; ++i)
+		// If the json data was malformed we know it happend on the last element and we'll need to free it separately
+		int num = errno == EUCLEAN ? fieldsCount - 1 : fieldsCount;
+		for(int i = 0; i < num; ++i)
 			cjsonFreeMapping(fields[i]);
 
-		cjson_free(fields[count - 1]); // we know the last element failed and we need to free it, but not it's children
-		return NULL;
+		if(errno == EUCLEAN)
+			cjson_free(fields[fieldsCount - 1]);
+
+		cjson_free(fields);
+		return -1;
 	}
 
-	object->data.object.count = count;
-	object->data.object.values = fields;
+	if(tokens[idx].type != listEnd)
+	{
+		errno = EUCLEAN;
+		for(int i = 0; i < fieldsCount; ++i)
+			cjsonFreeMapping(fields[i]);
 
-	return endp + 1; // + 1 as we want to skip the '}'
+		cjson_free(fields);
+		return -1;
+	}
+
+	list->data.object.count = fieldsCount;
+	list->data.object.values = fields;
+	return count - idx - 1; // - 1 as we want to skip the closing bracket
 }
 
-// If you have any questions regarding this function please refer to cjsonReadObject as they are extremly similar and thus I didn't copy comments
-static char* cjsonReadArray(char *data, cJsonElement *array)
-{
-	data++;
-
-	int count = 0, capacity = 2;
-	cJsonElement **values = cjson_malloc(sizeof(cJsonElement*) * capacity);
-	if(!values)
-	{
-		errno = ENOMEM;
-		return NULL;
-	}
-
-	int error = 0;
-	while(data && *data != ']')
-	{
-		data = cjsonReadField(data, NULL, &values, &count, &capacity);
-
-		if(!data)
-		{
-			error = 1;
-			break;
-		}
-
-		if(*data == ',')
-			data++;
-
-		while(cjsonIsWhitespace(*data))
-			data++;
-
-		if(*data == 0)
-		{
-			errno = EUCLEAN;
-			error = 1;
-			break;
-		}
-	}
-
-	if(!data || error)
-	{
-		for(int i = 0; i < count - 1; ++i)
-			cjsonFreeMapping(values[i]);
-
-		cjson_free(values[count - 1]);
-		return NULL;
-	}
-
-	array->data.array.count = count;
-	array->data.array.values = values;
-
-	return data + 1; // + 1 as we want to skip ']'
-}
-
-cJsonElement* cjsonParseData(char *data)
+cJsonElement* cjsonParse(char *data)
 {
 	if(!data || (*data != '{' && *data != '[')) // Invalid pointer or data start
 	{
@@ -333,25 +438,28 @@ cJsonElement* cjsonParseData(char *data)
 		return NULL;
 	}
 
+	int tokCount = 0;
+	cJsonToken *list = cjsonLex(data, &tokCount);
+	if(!list)
+		return NULL;
+
 	cJsonElement *root = cjson_malloc(sizeof(cJsonElement));
 	if(!root)
 	{
+		cjson_free(list);
 		errno = ENOMEM;
 		return NULL;
 	}
 
-	char *ptr = NULL;
 	memset(root, 0, sizeof(cJsonElement));
-	if(*data == '{')
-		ptr = cjsonReadObject(data, root);
-	else
-		ptr = cjsonReadArray(data, root);
+	tokCount = cjsonReadList(list, tokCount, root);
 
-	if(ptr)
+	cjson_free(list);
+	if(tokCount == 0)
 		return root;
 
 	// data may a be malformed json but failure to read a string/number or allocation
-	// also cause NULL to be returned so we must not modify errno here
+	// of heap memory also cause NULL to be returned so we must not modify errno here
 	cjsonFreeMapping(root);
 	return NULL;
 }

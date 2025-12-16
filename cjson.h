@@ -466,6 +466,9 @@ cJsonElement* cjsonParse(char *data)
 
 void cjsonFreeMapping(cJsonElement *mapping)
 {
+	if(!mapping)
+		return;
+
 	if(mapping->name)
 	{
 		cjson_free(mapping->name);
@@ -483,6 +486,7 @@ void cjsonFreeMapping(cJsonElement *mapping)
 			cjson_free(mapping->data.string);
 
 		mapping->data.string = NULL;
+		cjson_free(mapping);
 		return;
 	}
 
@@ -491,7 +495,10 @@ void cjsonFreeMapping(cJsonElement *mapping)
 	if(mapping->data.object.values)
 	{
 		for(int i = 0; i < mapping->data.object.count; ++i)
+		{
 			cjsonFreeMapping(mapping->data.object.values[i]);
+			mapping->data.object.values[i] = NULL;
+		}
 
 		cjson_free(mapping->data.object.values);
 		mapping->data.object.values = NULL;

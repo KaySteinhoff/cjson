@@ -227,7 +227,7 @@ static unsigned int cjsonIsWhitespace(char c)
 //
 // <list> -> (CJ_CUB_OPEN|CJ_SQB_OPEN) <field>* ("$ == CJ_CUB_OPEN ? CJ_CUB_CLOSED" | "$ == CJ_SQB_OPEN ? CJ_SQB_CLOSED")
 // <field> -> "$ == CJ_CUB_OPEN ? <string> CJ_DDOT" (<list>|<string>|<number>) CJ_COMMA
-// <string> -> CJ_QUOTE [CJ_LABEL+|CJ_DDOT+|CJ_DOT+|CJ_COMMA+]! CJ_QUOTE
+// <string> -> CJ_QUOTE [CJ_LABEL+|CJ_DDOT+|CJ_DOT+|CJ_COMMA+|CJ_CUB_OPEN+|CJ_CUB_CLOSED+|CJ_SQB_OPEN+|CJ_SQB_CLOSED+]! CJ_QUOTE
 // <number> -> (CJ_NUMBER)! [CJ_DOT|CJ_NUMBER]
 
 static int cjsonReadNumber(cJsonToken *tokens, int count, cJsonElement *number)

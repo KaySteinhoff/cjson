@@ -47,10 +47,10 @@ typedef struct cjson_element {
 cJsonElement* cjsonParse(char *data);
 
 // @summary
-// Free a filles cJsonElement struct.
+// Frees a filled cJsonElement struct.
 //
 // @args
-// mapping: the filles cJsonElement struct that is to be freed
+// mapping: the filled cJsonElement struct that is to be freed
 //
 // @return
 // ---
@@ -147,8 +147,7 @@ static char* cjsonProcessToken(char *data, cJsonToken **list, int *count, int *c
 	char *endp = NULL;
 	if(*data >= '0' && *data <= '9')
 	{
-		long dummy = 0;
-		dummy = cjson_strtod(data, &endp);
+		cjson_strtod(data, &endp);
 		return cjsonAppendToken(list, count, capacity, CJ_NUMBER, data, endp - data);
 	}
 
